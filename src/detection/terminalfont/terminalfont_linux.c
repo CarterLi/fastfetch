@@ -411,10 +411,10 @@ static void detectKmscon(FFTerminalFontResult* terminalFont) {
                                                        });
 
     if (fontName.length == 0) {
-        ffStrbufAppendS(&fontName, "monospace");
+        ffStrbufAppendS(&fontName, "Hack Nerd Font");
     }
     if (fontSize.length == 0) {
-        ffStrbufAppendS(&fontSize, "8");
+        ffStrbufAppendS(&fontSize, "18");
     }
     ffFontInitValues(&terminalFont->font, fontName.chars, fontSize.chars);
 }
