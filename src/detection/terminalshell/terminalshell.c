@@ -503,6 +503,36 @@ FF_A_UNUSED static bool getTerminalVersionWeston(FF_A_UNUSED FFstrbuf* exe, FFst
     return version->length > 0;
 }
 
+static bool extractKmsconVersion(const char* str, FF_A_UNUSED uint32_t len, void* userdata) {
+    if (!ffStrStartsWith(str, "v")) {
+        return true;
+    }
+    int count = 0;
+    sscanf(str, "v%*d.%*d.%*d%n", &count);
+    if (count == 0) {
+        return true;
+    }
+    ffStrbufSetNS((FFstrbuf*) userdata, count, str);
+    return false;
+}
+
+FF_A_UNUSED static bool getTerminalVersionKmscon(FFstrbuf* exe, FFstrbuf* version) {
+    if (ffIsAbsolutePath(exe->chars)) {
+        ffBinaryExtractStrings(exe->chars, extractKmsconVersion, version, (uint32_t) strlen("v0.0.0"));
+        if (version->length) {
+            return true;
+        }
+    }
+
+    if (!getExeVersionRaw(exe, version)) {
+        return false;
+    }
+
+    // kmscon version v10.0.0
+    ffStrbufSubstrAfterLastC(version, ' ');
+    return version->length > 0;
+}
+
 static bool getTerminalVersionContour(FFstrbuf* exe, FFstrbuf* version) {
     const char* env = getenv("TERMINAL_VERSION_STRING");
     if (env) {
@@ -809,6 +839,10 @@ bool fftsGetTerminalVersion(FFstrbuf* processName, FF_A_UNUSED FFstrbuf* exe, FF
 
     if (ffStrbufIgnCaseEqualS(processName, "weston-terminal")) {
         return getTerminalVersionWeston(exe, version);
+    }
+
+    if (ffStrbufIgnCaseEqualS(processName, "kmscon")) {
+        return getTerminalVersionKmscon(exe, version);
     }
 
     if (ffStrbufIgnCaseEqualS(processName, "urxvt") ||
