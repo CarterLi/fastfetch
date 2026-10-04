@@ -79,7 +79,11 @@ typedef enum FFNetworkingTransferEncoding {
 // as unsupported so that the caller fails the response instead of returning garbage.
 [[gnu::nonnull(1), gnu::pure, nodiscard]] FFNetworkingTransferEncoding ffNetworkingParseTransferEncoding(const char* value, uint32_t valueLen);
 
-#ifdef FF_HAVE_ZLIB
-const char* ffNetworkingLoadZlibLibrary(void);
+// Expands a body that arrived with `Content-Encoding: gzip`, rewriting the response around the
+// decoded bytes. Returns false when the member cannot be decoded, so that the caller fails the
+// response instead of handing back a body it cannot read.
+//
+// This uses the built-in decoder rather than zlib. Loading zlib cost ~1.5 ms per process, on a
+// path that runs on every `publicip` and `weather` detection, and it was paid inside the prepare
+// pass where `--stat` does not see it. See doc/zlib-vs-inflate.md.
 [[gnu::nonnull(1, 2), nodiscard]] bool ffNetworkingDecompressGzip(FFstrbuf* buffer, char* headerEnd);
-#endif

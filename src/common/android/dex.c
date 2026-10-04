@@ -1,5 +1,6 @@
 #include "common/android/dex.h"
 #include "common/debug.h"
+#include "common/inflate.h"
 #include "common/io.h"
 #include "common/mallocHelper.h"
 
@@ -7,11 +8,6 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-
-#ifdef FF_HAVE_ZLIB
-    #include "common/library.h"
-    #include <zlib.h>
-#endif
 
 // Offsets into the dex header, from https://source.android.com/docs/core/runtime/dex-format.
 #define FF_DEX_ENDIAN_TAG 0x12345678u
@@ -541,40 +537,22 @@ static const uint8_t* findDexMagic(const uint8_t* jar, size_t jarSize, size_t* d
     return nullptr;
 }
 
-#ifdef FF_HAVE_ZLIB
 static const char* inflateDex(const uint8_t* data, size_t dataSize, uint32_t uncompressedSize, uint8_t** out) {
-    FF_LIBRARY_LOAD(zlib, "dlopen(libz) failed", "libz" FF_LIBRARY_EXTENSION, 2)
-    FF_LIBRARY_LOAD_SYMBOL(zlib, inflateInit2_, "dlsym(inflateInit2_) failed")
-    FF_LIBRARY_LOAD_SYMBOL(zlib, inflate, "dlsym(inflate) failed")
-    FF_LIBRARY_LOAD_SYMBOL(zlib, inflateEnd, "dlsym(inflateEnd) failed")
-
-    // Released by the cleanup on every path out below; ownership moves to the caller by clearing
-    // the pointer, which is also why no failure path has to free it by hand.
-    FF_AUTO_FREE uint8_t* buffer = malloc(uncompressedSize);
+    // One byte more than the dex, so that the decoder can NUL terminate its output the way it does
+    // for its other callers.
+    FF_AUTO_FREE uint8_t* buffer = malloc((size_t) uncompressedSize + 1);
     if (buffer == nullptr) {
         FF_DEBUG("malloc(%u) for the inflated dex failed", uncompressedSize);
         return "malloc failed";
     }
 
-    // `uncompress` is not usable here: a zip entry holds a raw deflate stream, without the two byte
-    // zlib header that entry point insists on. A negative window size tells inflate to skip the
-    // header, which is what the zip format expects.
-    z_stream stream = {};
-    stream.next_in = (Bytef*) data;
-    stream.avail_in = (uInt) dataSize;
-    stream.next_out = buffer;
-    stream.avail_out = (uInt) uncompressedSize;
-
-    const int initStatus = ffinflateInit2_(&stream, -MAX_WBITS, ZLIB_VERSION, (int) sizeof(z_stream));
-    if (initStatus != Z_OK) {
-        FF_DEBUG("inflateInit2() failed: zlib status %d", initStatus);
-        return "inflateInit2 failed";
-    }
-    const int status = ffinflate(&stream, Z_FINISH);
-    ffinflateEnd(&stream);
-    if (status != Z_STREAM_END || stream.total_out != (uLong) uncompressedSize) {
-        FF_DEBUG("inflate() returned %d, produced %lu of %u bytes",
-            status, stream.total_out, uncompressedSize);
+    // The built-in decoder, not the zlib fastfetch may have dlopen'ed for other modules. A zip
+    // entry holds a raw deflate stream with no zlib header, so zlib would need
+    // inflateInit2(-MAX_WBITS) rather than its plain entry point -- and a dex taken off a device is
+    // exactly the kind of input whose length and well-formedness cannot be assumed, which is what
+    // this decoder checks for and the tinf-derived one it replaced did not.
+    if (ffInflate((const char*) data, (uint32_t) dataSize, uncompressedSize, (char*) buffer, uncompressedSize + 1) != uncompressedSize) {
+        FF_DEBUG("Inflating the %zu byte dex entry to %u bytes failed", dataSize, uncompressedSize);
         return "Inflating the dex failed";
     }
 
@@ -582,7 +560,6 @@ static const char* inflateDex(const uint8_t* data, size_t dataSize, uint32_t unc
     buffer = nullptr; // the caller owns it from here
     return nullptr;
 }
-#endif
 
 const char* ffDexStaticInts(const char* jarPath, const FFDexStaticIntRequest* requests, uint32_t count) {
     // Every request is written the sentinel before anything can fail, so that a caller reads a result
@@ -672,27 +649,30 @@ const char* ffDexStaticInts(const char* jarPath, const FFDexStaticIntRequest* re
                 FF_DEBUG("Neither %s nor a dex magic signature is in the %zu byte jar", entry, mapping.mappedSize);
                 return "No dex in the jar";
             }
+        } else if (method == FF_ZIP_METHOD_STORED) {
+            // Fast path: an uncompressed entry *is* the dex, so `data` already points at it inside
+            // the mapping and there is nothing to decode. AOSP stores the dex of its system jars
+            // this way -- that is what lets ART map the file instead of copying it -- so on a
+            // device this is the common case, and the alternative is inflating several megabytes
+            // once per lookup.
+            //
+            // `dataSize` already holds the `compressedSize` that `findDexEntry` checked against the
+            // mapping, and for a stored entry that is the payload itself. The header's
+            // `uncompressedSize` is deliberately not used here: nothing bounds that value, so a
+            // corrupt one reaches past the end of the mapping, which is exactly what the dex header
+            // would then be validated against.
         } else if (method == FF_ZIP_METHOD_DEFLATED) {
-            #ifdef FF_HAVE_ZLIB
             error = inflateDex(data, dataSize, uncompressedSize, &inflated);
             if (error != nullptr) {
                 return error;
             }
             data = inflated;
             dataSize = uncompressedSize;
-            #else
-            return "The jar deflates its dex entries and fastfetch was built without zlib";
-            #endif
-        } else if (method != FF_ZIP_METHOD_STORED) {
+        } else {
             FF_DEBUG("%s uses compression method %u, only %u (stored) and %u (deflated) are handled",
                 entry, method, FF_ZIP_METHOD_STORED, FF_ZIP_METHOD_DEFLATED);
             return "A dex entry uses an unsupported compression method";
         }
-        // A STORED entry needs no further work: `dataSize` already holds the `compressedSize` that
-        // `findDexEntry` checked against the mapping, and for a STORED entry the payload is the file
-        // itself. The header's `uncompressedSize` is deliberately not used for it -- nothing bounds
-        // that value, so a corrupt one reaches past the end of the mapping, which is exactly what the
-        // dex header would then be validated against.
 
         mapping.data = data;
         mapping.size = dataSize;

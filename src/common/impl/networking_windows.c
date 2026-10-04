@@ -52,23 +52,6 @@ static const char* initWsaData(WSADATA* wsaData) {
 const char* ffNetworkingSendHttpRequest(FFNetworkingState* state, const char* host, uint16_t port, const char* path, const char* headers) {
     FF_DEBUG("Preparing to send HTTP request: host=%s, port=%u, path=%s", host, port, path);
 
-    if (state->compression) {
-#ifdef FF_HAVE_ZLIB
-        const char* zlibError = ffNetworkingLoadZlibLibrary();
-        // Only enable compression if zlib library is successfully loaded
-        if (zlibError == nullptr) {
-            FF_DEBUG("Successfully loaded zlib library, compression enabled");
-        } else {
-            FF_DEBUG("Failed to load zlib library, compression disabled: %s", zlibError);
-            state->compression = false;
-        }
-#else
-        FF_DEBUG("zlib not supported at build time, compression disabled");
-        state->compression = false;
-#endif
-    } else {
-        FF_DEBUG("Compression disabled");
-    }
 
     static WSADATA wsaData;
     if (wsaData.wVersion == 0) {
@@ -441,8 +424,9 @@ const char* ffNetworkingRecvHttpResponse(FFNetworkingState* state, FFstrbuf* buf
         return "Content length mismatch";
     }
 
-// If compression was used, try to decompress
-#ifdef FF_HAVE_ZLIB
+    // If compression was used, try to decompress
+#if FF_HAVE_MINIZ || FF_HAVE_ZLIB
+    FF_DEBUG("Compression %s", state->compression ? "enabled" : "disabled");
     if (state->compression) {
         FF_DEBUG("Content received, checking if compressed");
         if (!ffNetworkingDecompressGzip(buffer, buffer->chars + headerEnd)) {

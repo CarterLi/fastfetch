@@ -1,7 +1,9 @@
 #include "lm.h"
 #include "common/debug.h"
+#include "common/inflate.h"
 #include "common/io.h"
 #include "common/mallocHelper.h"
+#include "common/path.h"
 #include "common/properties.h"
 #include "common/processing.h"
 #include "common/strutil.h"
@@ -11,6 +13,7 @@
 #endif
 
 #include <errno.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #if __FreeBSD__
@@ -54,39 +57,32 @@ static const char* getSshdVersion(FFstrbuf* version) {
     return nullptr;
 }
 
-#ifdef FF_HAVE_ZLIB
-    #include "common/library.h"
-    #include "common/path.h"
+#define FF_SDDM_MAN_PAGE FF_PATH_PKG_BASE "/share/man/man1/sddm.1.gz"
 
-    #include <stdlib.h>
-    #include <zlib.h>
-
+// The version is read out of the man page, not out of `sddm --version`: starting the binary needs
+// a display and a session, and this has to work from a plain shell.
+//
+// The page is a gzip member, and it used to be expanded by dlopen'ing libz. It no longer is: the
+// built-in decoder handles it, so the version is still reported when libz cannot be loaded at run
+// time and when fastfetch is built with `-DENABLE_ZLIB=OFF`. On Linux the dlopen only cost ~40 us
+// (see doc/zlib-vs-inflate.md 9.10), so the reason is the dependency, not the time.
 static const char* getSddmVersion(FFstrbuf* version) {
-    FF_LIBRARY_LOAD_MESSAGE(zlib, "libz" FF_LIBRARY_EXTENSION, 2)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(zlib, gzopen)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(zlib, gzread)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(zlib, gzerror)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(zlib, gztell)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(zlib, gzrewind)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(zlib, gzclose)
-
-    gzFile file = ffgzopen(FF_PATH_PKG_BASE "/share/man/man1/sddm.1.gz", "rb");
-    if (file == Z_NULL) {
-        FF_DEBUG("ffgzopen(\"/usr/share/man/man1/sddm.1.gz\", \"rb\") failed: %s", strerror(errno));
-        return "ffgzopen(\"/usr/share/man/man1/sddm.1.gz\", \"rb\") failed";
+    FF_STRBUF_AUTO_DESTROY compressed = ffStrbufCreate();
+    if (!ffReadFileBuffer(FF_SDDM_MAN_PAGE, &compressed)) {
+        FF_DEBUG("Failed to read " FF_SDDM_MAN_PAGE);
+        return "Failed to read " FF_SDDM_MAN_PAGE;
     }
 
-    ffStrbufEnsureFree(version, 2047);
-    memset(version->chars, 0, version->allocated);
-    int size = ffgzread(file, version->chars, version->allocated - 1);
-    ffgzclose(file);
-
-    if (size <= 0) {
-        FF_DEBUG("ffgzread(file, version->chars, version->length) failed");
-        return "ffgzread(file, version->chars, version->length) failed";
+    // 8 MB is far past any man page (the largest one in a typical installation expands to ~1.6 MB)
+    // and still small enough that a corrupt file cannot ask for an allocation the process cannot
+    // back. The whole member is expanded rather than only its first two kilobytes: the page this
+    // reads is a few kilobytes long, and a decoder that stops early is a second code path to keep
+    // correct for no measurable gain.
+    if (ffInflateGzip(compressed.chars, compressed.length, version, 8u * 1024u * 1024u) == 0) {
+        FF_DEBUG("Failed to decompress " FF_SDDM_MAN_PAGE);
+        return "Failed to decompress " FF_SDDM_MAN_PAGE;
     }
 
-    version->length = (uint32_t) size;
     uint32_t index = ffStrbufFirstIndexS(version, ".TH ");
     if (index == version->length) {
         FF_DEBUG(".TH is not found");
@@ -104,11 +100,6 @@ static const char* getSddmVersion(FFstrbuf* version) {
 
     return nullptr;
 }
-#else
-static const char* getSddmVersion([[maybe_unused]] FFstrbuf* version) {
-    return "Fastfetch is built without libz support";
-}
-#endif
 
 static const char* getXfwmVersion(FFstrbuf* version) {
     const char* error = ffProcessAppendStdOut(version, (char* const[]) { "xfwm4", "--version", nullptr });
