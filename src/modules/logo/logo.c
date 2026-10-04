@@ -41,7 +41,7 @@ bool ffGenerateLogoJsonResult([[maybe_unused]] FFLogoOptions* options, yyjson_mu
 
     yyjson_mut_val* obj = yyjson_mut_obj_add_obj(doc, module, "result");
 
-    yyjson_mut_obj_add_str(doc, obj, "lines", logo->lines);
+    yyjson_mut_obj_add_str(doc, obj, "lines", ffLogoDecompress(logo->lines));
 
     yyjson_mut_val* namesArr = yyjson_mut_obj_add_arr(doc, obj, "names");
     for (size_t i = 0; i < FASTFETCH_LOGO_MAX_NAMES && logo->names[i]; i++) {

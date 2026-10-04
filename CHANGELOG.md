@@ -9,6 +9,8 @@ Features:
 * Added Sound detection on Android. (Sound, Android)
 * Added battery temperature, remaining time and charger type (AC / USB / wireless) detection on Android. (Battery, Android)
 * Performance improvements & internal cleanups
+* The built-in ascii logos and help text are now stored compressed, reducing the binary size by roughly 11%. This needs `python` at configure time; without it both are stored verbatim. Pass `-DENABLE_STATIC_TEXT_COMPRESSION=OFF` to skip it. (Logo, Help)
+* Added the `-DENABLE_MINIZ` option (default `ON`). Setting it to `OFF` drops the vendored DEFLATE decoder from the binary and loads the system zlib at run time instead; it also disables `ENABLE_STATIC_TEXT_COMPRESSION`. `--list-features` now reports the decoder in use and whether the built-in logos and help text are stored compressed. (CMake)
 * Added Finnish Language Support
 
 Bugfixes:
@@ -18,6 +20,7 @@ Bugfixes:
 * Fixed the foot terminal font size not being parsed when written as `Font Name-size`, e.g. `Berkeley Mono-12`. (#2624, TerminalFont, Linux)
 * Fixed `/boot` being hidden by default on Haiku, where it is the system volume. (Disk, Haiku)
 * Improved Snapdragon X1/X2 model name detection on Linux. (#2625, CPU, Linux)
+* Fixed the build failing with `-DENABLE_ZLIB=OFF` when chafa image logos are enabled: `FF_LIBRARY_LOAD` was only in scope under the zlib guard. (Logo)
 
 Logos:
 * Added filled Artix logo (#2631)

@@ -13,6 +13,11 @@
 #include "common/mallocHelper.h"
 #include "fastfetch_datatext.h"
 
+#if FF_STATIC_TEXT_COMPRESSED
+    #include "fastfetch_helpjson.h"
+    #include "common/inflate.h"
+#endif
+
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
@@ -98,6 +103,25 @@ static void printCommandFormatHelp(const char* command) {
 }
 
 [[gnu::cold]]
+static const char* getHelpJsonText(uint32_t* len) {
+#if FF_STATIC_TEXT_COMPRESSED
+    // The minified help text is stored deflated to keep the binary small. --help is a
+    // cold path, so inflating it again on every call is not worth caching: a single
+    // invocation inflates it at most twice.
+    static char buffer[FASTFETCH_DATATEXT_JSON_HELP_SIZE + 1];
+    if (ffInflate(FASTFETCH_DATATEXT_JSON_HELP, FASTFETCH_DATATEXT_JSON_HELP_DEFLATE_SIZE, FASTFETCH_DATATEXT_JSON_HELP_SIZE, buffer, (uint32_t) sizeof(buffer)) != FASTFETCH_DATATEXT_JSON_HELP_SIZE) {
+        *len = 0;
+        return nullptr;
+    }
+    *len = FASTFETCH_DATATEXT_JSON_HELP_SIZE;
+    return buffer;
+#else
+    *len = (uint32_t) strlen(FASTFETCH_DATATEXT_JSON_HELP);
+    return FASTFETCH_DATATEXT_JSON_HELP;
+#endif
+}
+
+[[gnu::cold]]
 static void printFullHelp() {
     fputs("Fastfetch is a neofetch-like tool for fetching system information and displaying them in a pretty way\n\n", stdout);
     if (!instance.config.display.pipe) {
@@ -106,7 +130,10 @@ static void printFullHelp() {
         fputs("Usage: fastfetch <?options>\n\n", stdout);
     }
 
-    yyjson_doc* doc = yyjson_read(FASTFETCH_DATATEXT_JSON_HELP, strlen(FASTFETCH_DATATEXT_JSON_HELP), YYJSON_READ_NOFLAG);
+    uint32_t helpLen;
+    const char* help = getHelpJsonText(&helpLen);
+    if (!help) return;
+    yyjson_doc* doc = yyjson_read(help, helpLen, YYJSON_READ_NOFLAG);
     assert(doc);
     yyjson_val *groupKey, *flagArr;
     size_t groupIdx, groupMax;
@@ -206,7 +233,9 @@ For detailed information on logo options, module configuration, and formatting, 
 
 [[gnu::cold]]
 static bool printSpecificCommandHelp(const char* command) {
-    yyjson_doc* doc = yyjson_read(FASTFETCH_DATATEXT_JSON_HELP, strlen(FASTFETCH_DATATEXT_JSON_HELP), YYJSON_READ_NOFLAG);
+    uint32_t helpLen;
+    const char* help = getHelpJsonText(&helpLen);
+    yyjson_doc* doc = yyjson_read(help, helpLen, YYJSON_READ_NOFLAG);
     assert(doc);
     yyjson_val *groupKey, *flagArr;
     size_t groupIdx, groupMax;
@@ -619,7 +648,10 @@ static void parseCommand(FFdata* data, char* key, char* value) {
         printCommandHelp(value);
         exit(0);
     } else if (ffStrEqualsIgnCase(key, "--help-raw")) {
-        puts(FASTFETCH_DATATEXT_JSON_HELP);
+        uint32_t helpLen;
+        const char* help = getHelpJsonText(&helpLen);
+        fwrite(help, 1, helpLen, stdout);
+        putchar('\n');
         exit(0);
     } else if (ffStrEqualsIgnCase(key, "-v") || ffStrEqualsIgnCase(key, "--version")) {
         printVersion();

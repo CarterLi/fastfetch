@@ -43,6 +43,9 @@ const FFlogo* ffLogoGetBuiltinDetected(FFLogoSize size);
 extern const FFlogo* ffLogoBuiltins[];
 extern const FFlogo ffLogoUnknown;
 
+// logo_inflate.c
+const char* ffLogoDecompress(const char* compressed);
+
 #if FF_HAVE_IMAGE_LOGO
 // image/image.c
 bool ffLogoPrintImageIfExists(FFLogoType type, bool printError);

@@ -1,4 +1,5 @@
 #include "logo/logo.h"
+#include "common/inflate.h"
 #include "common/io.h"
 #include "common/printing.h"
 #include "common/processing.h"
@@ -438,7 +439,7 @@ static const FFlogo* logoGetBuiltinDetected(FFLogoSize size) {
 static void logoPrintStruct(const FFlogo* logo) {
     logoApplyColors(logo, true);
 
-    ffLogoPrintChars(logo->lines, true);
+    ffLogoPrintChars(ffLogoDecompress(logo->lines), true);
 }
 
 static void logoPrintNone(void) {
@@ -861,3 +862,38 @@ const FFlogo* ffLogoGetBuiltinForName(const FFstrbuf* name, FFLogoSize size) {
 const FFlogo* ffLogoGetBuiltinDetected(FFLogoSize size) {
     return logoGetBuiltinDetected(size);
 }
+
+#if FF_STATIC_TEXT_COMPRESSED
+
+// The longest built-in logo is a little under 4 KiB; leave room for the terminator
+#define FF_LOGO_INFLATE_MAX_OUTPUT 8192
+
+// Logos are printed one at a time, so a single shared buffer is enough
+static char logoDecompressBuffer[FF_LOGO_INFLATE_MAX_OUTPUT];
+
+const char* ffLogoDecompress(const char* compressed) {
+    if (compressed == NULL) return "";
+
+    // scripts/compress-logos.py prefixes every stream with two little-endian u16s - the
+    // uncompressed length and the length of the DEFLATE stream behind them - which is why no
+    // separate index table is needed, and why the decoder can be told where its input ends
+    const uint8_t* block = (const uint8_t*) compressed;
+    uint32_t rawLength = (uint32_t) block[0] | ((uint32_t) block[1] << 8);
+    uint32_t deflateLength = (uint32_t) block[2] | ((uint32_t) block[3] << 8);
+    if (rawLength == 0 || rawLength >= FF_LOGO_INFLATE_MAX_OUTPUT) return "";
+
+    if (ffInflate(compressed + 4, deflateLength, rawLength, logoDecompressBuffer, FF_LOGO_INFLATE_MAX_OUTPUT) != rawLength) return "";
+    return logoDecompressBuffer;
+}
+
+#else
+
+// ENABLE_STATIC_TEXT_COMPRESSION=OFF: the logos are stored verbatim in the binary, so there is
+// nothing to inflate. Keeping the function lets logo.c and modules/logo/logo.c use the
+// same call in both configurations; the compiler folds this one away.
+
+const char* ffLogoDecompress(const char* compressed) {
+    return compressed;
+}
+
+#endif

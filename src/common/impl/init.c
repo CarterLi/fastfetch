@@ -275,6 +275,12 @@ void ffListFeatures(void) {
 #if FF_HAVE_SIXEL
         "Embedded sixel\n"
 #endif
+#if FF_HAVE_MINIZ
+        "Embedded miniz\n"
+#endif
+#if FF_STATIC_TEXT_COMPRESSED
+        "Compressed static text\n"
+#endif
 #if FF_HAVE_WINRT
         "WinRT headers\n"
 #endif

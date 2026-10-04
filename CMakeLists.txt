@@ -123,6 +123,14 @@ option(ENABLE_WORDEXP "Enable using of wordexp(3) if available, instead of glob(
 option(ENABLE_LUA "Enable lua scripting for format strings" ON)
 option(ENABLE_LIBZFS "Enable libzfs" ON)
 option(ENABLE_WCWIDTH "Detect wide-width characters with wcwidth when calculating logo and separator width. Disable for a smaller and slightly faster build, but logos containing CJK/emoji may be measured too narrow and render incorrectly. Such usecases are uncommon." ON)
+option(ENABLE_STATIC_TEXT_COMPRESSION "Store the built-in ascii logos and help text compressed to reduce the binary size by roughly 11%, requires `python`. Without it both are stored verbatim" ON)
+option(ENABLE_MINIZ "Expand DEFLATE with the vendored miniz instead of the system zlib. Disabling it also disables ENABLE_STATIC_TEXT_COMPRESSION" ON)
+
+if(NOT ENABLE_MINIZ)
+    message(STATUS "ENABLE_MINIZ is OFF: the built-in ascii logos and help text are stored verbatim, and zlib is loaded at run time")
+    set(ENABLE_STATIC_TEXT_COMPRESSION OFF)
+endif()
+
 set(DEFAULT_STRUCTURE "Title:Separator:OS:Host:Kernel:Uptime:Packages:Shell:Display:DE:WM:WMTheme:Theme:Icons:Font:Cursor:Terminal:TerminalFont:CPU:GPU:Memory:Swap:Disk:LocalIp:Battery:PowerAdapter:Locale:Break:Colors" CACHE STRING "Default module structure for detection")
 if(WIN32 AND NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     option(ENABLE_WIN81_COMPAT "Enable legacy Windows compatibility (Windows 8.1 and later; Windows 7 unsupported)" ON)
@@ -379,17 +387,40 @@ function(fastfetch_load_text FILENAME OUTVAR)
 endfunction(fastfetch_load_text)
 
 find_package(Python)
-if(Python_FOUND)
-    message(STATUS "Minifying 'help.json'")
-    execute_process(COMMAND ${Python_EXECUTABLE} -c "import json,sys;json.dump(json.load(sys.stdin),sys.stdout,separators=(',',':'))"
-                    INPUT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/doc/help.json"
-                    OUTPUT_VARIABLE DATATEXT_JSON_HELP)
-    if(DATATEXT_JSON_HELP STREQUAL "")
-        message(ERROR "DATATEXT_JSON_HELP is empty, which should not happen!")
+if(ENABLE_STATIC_TEXT_COMPRESSION AND NOT Python_FOUND)
+    message(WARNING "Python3 is not found, the built-in ascii logos and help text will not be compressed")
+    set(ENABLE_STATIC_TEXT_COMPRESSION OFF)
+endif()
+if(ENABLE_STATIC_TEXT_COMPRESSION)
+    message(STATUS "Compressing 'help.json'")
+    execute_process(
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compress-help.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/doc/help.json"
+                "${CMAKE_CURRENT_BINARY_DIR}/fastfetch_helpjson.h"
+        RESULT_VARIABLE HELP_COMPRESS_RESULT
+        OUTPUT_VARIABLE HELP_COMPRESS_OUTPUT
+    )
+    if(NOT HELP_COMPRESS_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to compress 'help.json': ${HELP_COMPRESS_OUTPUT}")
     endif()
+    # fastfetch.c includes the generated header and inflates it with ffInflate()
+    set(DATATEXT_JSON_HELP_DEFLATED 1)
+    set(DATATEXT_JSON_HELP "((const char*) ffHelpJsonCompressed)")
 else()
-    message(WARNING "Python3 is not found, 'help.json' will not be minified")
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/doc/help.json" DATATEXT_JSON_HELP)
+    if(Python_FOUND)
+        message(STATUS "Minifying 'help.json'")
+        execute_process(COMMAND ${Python_EXECUTABLE} -c "import json,sys;json.dump(json.load(sys.stdin),sys.stdout,separators=(',',':'))"
+                        INPUT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/doc/help.json"
+                        OUTPUT_VARIABLE DATATEXT_JSON_HELP)
+        if(DATATEXT_JSON_HELP STREQUAL "")
+            message(ERROR "DATATEXT_JSON_HELP is empty, which should not happen!")
+        endif()
+    else()
+        message(WARNING "Python3 is not found, 'help.json' will not be minified")
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/doc/help.json" DATATEXT_JSON_HELP)
+    endif()
+    fastfetch_encode_c_string("${DATATEXT_JSON_HELP}" DATATEXT_JSON_HELP)
+    set(DATATEXT_JSON_HELP_DEFLATED 0)
 endif()
 
 if(ENABLE_EMBEDDED_PCIIDS AND NOT EXISTS "${PROJECT_BINARY_DIR}/fastfetch_pciids.c.inc")
@@ -448,8 +479,6 @@ else()
     configure_file(doc/fastfetch.1.in fastfetch.1 @ONLY)
 endif()
 
-fastfetch_encode_c_string("${DATATEXT_JSON_HELP}" DATATEXT_JSON_HELP)
-
 configure_file(src/fastfetch_config.h.in fastfetch_config.h @ONLY)
 configure_file(src/fastfetch_datatext.h.in fastfetch_datatext.h @ONLY)
 if(APPLE)
@@ -461,14 +490,29 @@ endif()
 ####################
 
 file(GLOB LOGO_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/logo/ascii/[a-z_]/*.txt")
-set(LOGO_BUILTIN_H "#pragma once\n#pragma GCC diagnostic ignored \"-Wtrigraphs\"\n\n")
-foreach(file ${LOGO_FILES})
-    fastfetch_load_text("${file}" content)
-    get_filename_component(file "${file}" NAME_WE)
-    string(TOUPPER "${file}" file)
-    set(LOGO_BUILTIN_H "${LOGO_BUILTIN_H}#define FASTFETCH_DATATEXT_LOGO_${file} ${content}\n")
-endforeach()
-file(GENERATE OUTPUT logo_builtin.h CONTENT "${LOGO_BUILTIN_H}")
+
+if(ENABLE_STATIC_TEXT_COMPRESSION)
+    message(STATUS "Compressing 'src/logo/ascii'")
+    execute_process(
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compress-logos.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/logo/ascii"
+                "${CMAKE_CURRENT_BINARY_DIR}/logo_builtin.h"
+        RESULT_VARIABLE LOGO_COMPRESS_RESULT
+        OUTPUT_VARIABLE LOGO_COMPRESS_OUTPUT
+    )
+    if(NOT LOGO_COMPRESS_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to compress the built-in ascii logos: ${LOGO_COMPRESS_OUTPUT}")
+    endif()
+else()
+    set(LOGO_BUILTIN_H "#pragma once\n#pragma GCC diagnostic ignored \"-Wtrigraphs\"\n\n")
+    foreach(file ${LOGO_FILES})
+        fastfetch_load_text("${file}" content)
+        get_filename_component(file "${file}" NAME_WE)
+        string(TOUPPER "${file}" file)
+        set(LOGO_BUILTIN_H "${LOGO_BUILTIN_H}#define FASTFETCH_DATATEXT_LOGO_${file} ${content}\n")
+    endforeach()
+    file(GENERATE OUTPUT logo_builtin.h CONTENT "${LOGO_BUILTIN_H}")
+endif()
 
 #######################
 # libfastfetch target #
@@ -499,6 +543,7 @@ set(LIBFASTFETCH_SRC
     src/common/impl/time.c
     src/common/impl/edidHelper.c
     src/common/impl/base64.c
+    src/common/impl/inflate.c
     src/common/impl/FFcache.c
     src/common/impl/FFlist.c
     src/common/impl/FFstrbuf.c
@@ -1501,6 +1546,19 @@ if(ENABLE_SIXEL)
     set_source_files_properties(${FF_SIXEL_SRC} PROPERTIES COMPILE_OPTIONS "-Wno-conversion")
 endif()
 
+if(ENABLE_MINIZ)
+    # See src/3rdparty/miniz/README.md.
+    list(APPEND LIBFASTFETCH_SRC src/3rdparty/miniz/miniz_tinfl.c)
+
+    # Reduce the vendored miniz to a decompressor: no ZIP, no compressor, no zlib wrapper, no
+    # stdio, no time, and no heap-allocated decompressor state -- ffInflate() keeps that on the
+    # stack. MINIZ_NO_INFLATE_APIS must not be defined; that is the one that removes tinfl.
+    set_source_files_properties(src/3rdparty/miniz/miniz_tinfl.c PROPERTIES
+        COMPILE_DEFINITIONS "MINIZ_NO_ARCHIVE_APIS;MINIZ_NO_DEFLATE_APIS;MINIZ_NO_ZLIB_APIS;MINIZ_NO_STDIO;MINIZ_NO_TIME;MINIZ_NO_MALLOC"
+        COMPILE_OPTIONS "-Wno-conversion"
+    )
+endif()
+
 add_library(libfastfetch OBJECT
     ${LIBFASTFETCH_SRC}
 )
@@ -1895,6 +1953,19 @@ if(ENABLE_THREADS)
     if(CMAKE_USE_PTHREADS_INIT) #Threads::Threads is not set for WIN32
         target_link_libraries(libfastfetch PRIVATE Threads::Threads)
     endif()
+endif()
+
+if(ENABLE_STATIC_TEXT_COMPRESSION)
+    target_compile_definitions(libfastfetch PUBLIC FF_STATIC_TEXT_COMPRESSED=1)
+endif()
+
+# src/common/impl/inflate.c decodes DEFLATE with one of two backends. The default is the vendored
+# miniz added to the source list above: miniz_tinfl.c includes "miniz.h", and the vendored copy is
+# not on the default include path. With ENABLE_MINIZ=OFF that file is not compiled at all and the
+# same wrappers are served by the system zlib, which inflate.c dlopen()s and keeps loaded.
+if(ENABLE_MINIZ)
+    target_compile_definitions(libfastfetch PRIVATE FF_HAVE_MINIZ=1)
+    target_include_directories(libfastfetch PRIVATE ${PROJECT_SOURCE_DIR}/src/3rdparty/miniz)
 endif()
 
 if(ENABLE_IMAGE_LOGO)
