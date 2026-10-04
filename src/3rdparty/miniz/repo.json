@@ -1,0 +1,10 @@
+{
+    "home": "https://github.com/richgel999/miniz",
+    "license": "MIT ( embed in source )",
+    "version": "3.1.2",
+    "author": "Rich Geldreich, RAD Game Tools, Valve Software",
+    "modifications": [
+        "miniz_tinfl.c: the Low-level Decompression section of miniz.c (lines 2278-3027), with its MIT block moved to the top of the file and an include of miniz.h added; no code changed",
+        "miniz.h: vendored whole and unmodified; only its declarations are used"
+    ]
+}
